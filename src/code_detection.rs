@@ -869,6 +869,7 @@ mod tests {
             ],
             dpi: 96.0,
             backend: crate::capture::CaptureBackend::File,
+            desktop_layout: None,
         };
         assert_eq!(capture_luma(&frame).unwrap(), vec![0, 255, 255]);
     }

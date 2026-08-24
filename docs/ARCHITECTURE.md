@@ -8,7 +8,7 @@ helper and only a small idle daemon when global shortcuts are enabled.
 
 | Module | Responsibility |
 |---|---|
-| `capture` | X11 root-image conversion, portal screenshots, PNG loading, display DPI |
+| `capture` | X11 root-image conversion, portal screenshots, PNG loading, monitor geometry, display DPI |
 | `code_detection` | Full-resolution luminance conversion, multi-symbol decoding, result geometry |
 | `color` | RGB/HSV/HSL/CMYK/CIE/Oklab conversion, color names, custom format tokens |
 | `measurement` | Inclusive rectangles, physical units, two edge-distance algorithms |
@@ -43,7 +43,13 @@ that way, so recapture is explicit, asynchronous, and permission-preserving.
 Captures larger than the GPU's maximum texture side are divided into lossless
 tiles for rendering; the source frame is never downscaled, so the backdrop,
 pixel sampling, measurements, and code detection all retain the screenshot's
-original resolution. Scanner decoding runs on a worker thread and streams
+original resolution. When monitor geometry is available, one native overlay
+window paints each monitor's source region and converts its local pointer
+coordinates back to the complete capture. Wayland capture still uses the
+Screenshot portal. PixelKit uses an XWayland monitor map only when it matches
+the portal image. Without a matching map, PixelKit displays the portal snapshot
+in one fullscreen overlay. Scanner
+decoding runs on a worker thread and streams
 de-duplicated result snapshots, with source-image coordinates, as recursive
 regions finish. A dedicated multi-QR pass is merged with the general
 multi-format pass, so clickable regions can appear while scanning continues.

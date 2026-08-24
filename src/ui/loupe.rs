@@ -1,5 +1,8 @@
 use super::{color32, zoom_cell_size};
-use crate::{capture::CaptureFrame, measurement::Point};
+use crate::{
+    capture::{CaptureFrame, CaptureRegion},
+    measurement::Point,
+};
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,35 +66,39 @@ fn detail_line_layout(
     }
 }
 
-pub(super) fn capture_image_rect(frame: &CaptureFrame, available: Rect) -> Rect {
+pub(super) fn capture_image_rect(region: CaptureRegion, available: Rect) -> Rect {
     let scale =
-        (available.width() / frame.width as f32).min(available.height() / frame.height as f32);
-    let size = Vec2::new(frame.width as f32 * scale, frame.height as f32 * scale);
+        (available.width() / region.width as f32).min(available.height() / region.height as f32);
+    let size = Vec2::new(region.width as f32 * scale, region.height as f32 * scale);
     Rect::from_center_size(available.center(), size)
 }
 
 pub(super) fn screen_to_pixel(
-    frame: &CaptureFrame,
+    region: CaptureRegion,
     position: Pos2,
     image_rect: Rect,
 ) -> Option<Point> {
     if !image_rect.contains(position) {
         return None;
     }
-    let x =
-        ((position.x - image_rect.left()) / image_rect.width() * frame.width as f32).floor() as u32;
-    let y = ((position.y - image_rect.top()) / image_rect.height() * frame.height as f32).floor()
+    let x = ((position.x - image_rect.left()) / image_rect.width() * region.width as f32).floor()
+        as u32;
+    let y = ((position.y - image_rect.top()) / image_rect.height() * region.height as f32).floor()
         as u32;
     Some(Point {
-        x: x.min(frame.width - 1),
-        y: y.min(frame.height - 1),
+        x: region.x + x.min(region.width - 1),
+        y: region.y + y.min(region.height - 1),
     })
 }
 
-pub(super) fn point_position(frame: &CaptureFrame, point: Point, image_rect: Rect) -> Pos2 {
+pub(super) fn point_position(region: CaptureRegion, point: Point, image_rect: Rect) -> Pos2 {
     Pos2::new(
-        image_rect.left() + (point.x as f32 + 0.5) / frame.width as f32 * image_rect.width(),
-        image_rect.top() + (point.y as f32 + 0.5) / frame.height as f32 * image_rect.height(),
+        image_rect.left()
+            + (point.x.saturating_sub(region.x) as f32 + 0.5) / region.width as f32
+                * image_rect.width(),
+        image_rect.top()
+            + (point.y.saturating_sub(region.y) as f32 + 0.5) / region.height as f32
+                * image_rect.height(),
     )
 }
 
@@ -328,6 +335,29 @@ mod tests {
                 name_offset: Some(0.0),
                 height: 18.0,
             }
+        );
+    }
+
+    #[test]
+    fn monitor_region_mapping_preserves_desktop_coordinates() {
+        let region = CaptureRegion {
+            x: 1920,
+            y: 120,
+            width: 2560,
+            height: 1440,
+        };
+        let image = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 720.0));
+        assert_eq!(
+            screen_to_pixel(region, Pos2::new(0.0, 0.0), image),
+            Some(Point { x: 1920, y: 120 })
+        );
+        assert_eq!(
+            screen_to_pixel(region, Pos2::new(1279.9, 719.9), image),
+            Some(Point { x: 4479, y: 1559 })
+        );
+        assert_eq!(
+            point_position(region, Point { x: 1920, y: 120 }, image),
+            Pos2::new(0.25, 0.25)
         );
     }
 

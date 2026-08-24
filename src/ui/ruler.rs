@@ -1,9 +1,10 @@
 use super::{
-    TiledCaptureTexture, configure_style, copy_text, overlay_options, parse_rgba, wheel_steps,
+    OverlayPlan, OverlayView, TiledCaptureTexture, close_overlay, configure_style, copy_text,
+    overlay_options, parse_rgba, wheel_steps,
 };
 use crate::{
     APP_NAME,
-    capture::{CaptureBackend, CaptureFrame, capture_screen},
+    capture::{CaptureBackend, CaptureFrame, CaptureRegion, capture_screen},
     config::{RulerMode, Settings},
     measurement::{MeasureRect, Point, detect_edges},
 };
@@ -25,14 +26,15 @@ pub fn run_ruler(image_path: Option<&Path>) -> anyhow::Result<()> {
             settings.ruler.fallback_dpi,
         )?
     };
-    let mut options = overlay_options(&format!("Screen Ruler — {APP_NAME}"));
+    let overlay = OverlayPlan::new(&frame);
+    let mut options = overlay_options(&format!("Screen Ruler — {APP_NAME}"), &overlay);
     options.viewport = options.viewport.with_transparent(true);
     super::map_eframe(eframe::run_native(
         &format!("Screen Ruler — {APP_NAME}"),
         options,
         Box::new(move |cc| {
             configure_style(&cc.egui_ctx);
-            Ok(Box::new(RulerApp::new(cc, settings, frame)))
+            Ok(Box::new(RulerApp::new(cc, settings, frame, overlay)))
         }),
     ))
 }
@@ -53,8 +55,9 @@ struct RulerApp {
     settings: Settings,
     frame: CaptureFrame,
     texture: TiledCaptureTexture,
+    overlay: OverlayPlan,
     point: Point,
-    last_pointer: Option<Pos2>,
+    last_pointer: Option<(egui::ViewportId, Pos2)>,
     mode: RulerMode,
     drag_start: Option<Point>,
     retained: Vec<MeasurementRecord>,
@@ -67,10 +70,16 @@ struct RulerApp {
 }
 
 impl RulerApp {
-    fn new(cc: &eframe::CreationContext<'_>, settings: Settings, frame: CaptureFrame) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        frame: CaptureFrame,
+        overlay: OverlayPlan,
+    ) -> Self {
+        let root = overlay.root().region;
         let point = Point {
-            x: frame.width / 2,
-            y: frame.height / 2,
+            x: root.x + root.width / 2,
+            y: root.y + root.height / 2,
         };
         let texture = TiledCaptureTexture::load(&cc.egui_ctx, "pixelkit-ruler-capture", &frame);
         Self {
@@ -80,6 +89,7 @@ impl RulerApp {
             settings,
             frame,
             texture,
+            overlay,
             last_pointer: None,
             drag_start: None,
             retained: Vec::new(),
@@ -91,29 +101,28 @@ impl RulerApp {
         }
     }
 
-    fn image_rect(&self, available: Rect) -> Rect {
-        let scale = (available.width() / self.frame.width as f32)
-            .min(available.height() / self.frame.height as f32);
+    fn image_rect(region: CaptureRegion, available: Rect) -> Rect {
+        let scale = (available.width() / region.width as f32)
+            .min(available.height() / region.height as f32);
         Rect::from_center_size(
             available.center(),
-            Vec2::new(
-                self.frame.width as f32 * scale,
-                self.frame.height as f32 * scale,
-            ),
+            Vec2::new(region.width as f32 * scale, region.height as f32 * scale),
         )
     }
 
-    fn screen_to_pixel(&self, position: Pos2, rect: Rect) -> Option<Point> {
+    fn screen_to_pixel(region: CaptureRegion, position: Pos2, rect: Rect) -> Option<Point> {
         if !rect.contains(position) {
             return None;
         }
         Some(Point {
-            x: (((position.x - rect.left()) / rect.width() * self.frame.width as f32).floor()
-                as u32)
-                .min(self.frame.width - 1),
-            y: (((position.y - rect.top()) / rect.height() * self.frame.height as f32).floor()
-                as u32)
-                .min(self.frame.height - 1),
+            x: region.x
+                + (((position.x - rect.left()) / rect.width() * region.width as f32).floor()
+                    as u32)
+                    .min(region.width - 1),
+            y: region.y
+                + (((position.y - rect.top()) / rect.height() * region.height as f32).floor()
+                    as u32)
+                    .min(region.height - 1),
         })
     }
 
@@ -176,7 +185,7 @@ impl RulerApp {
                                 self.begin_refresh(ctx);
                             }
                             if ui.button("Close").clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                close_overlay(ctx);
                             }
                         });
                     })
@@ -242,6 +251,7 @@ impl RulerApp {
                 Ok(frame) if frame.width > 0 && frame.height > 0 => {
                     self.frame = frame;
                     self.texture.update(ctx, &self.frame);
+                    self.overlay = OverlayPlan::new(&self.frame);
                     self.point.x = self.point.x.min(self.frame.width - 1);
                     self.point.y = self.point.y.min(self.frame.height - 1);
                     self.drag_start = None;
@@ -325,19 +335,25 @@ impl RulerApp {
         }
     }
 
-    fn handle_input(&mut self, ctx: &egui::Context, image_rect: Rect, toolbar_rect: Rect) {
+    fn handle_input(
+        &mut self,
+        ctx: &egui::Context,
+        image_rect: Rect,
+        toolbar_rect: Rect,
+        region: CaptureRegion,
+    ) {
         let pointer = ctx.input(|input| input.pointer.hover_pos());
         if let Some(position) = pointer
-            && self
-                .last_pointer
-                .is_none_or(|last| last.distance(position) > 0.25)
+            && self.last_pointer.is_none_or(|(viewport, last)| {
+                viewport != ctx.viewport_id() || last.distance(position) > 0.25
+            })
         {
             if !toolbar_rect.contains(position)
-                && let Some(point) = self.screen_to_pixel(position, image_rect)
+                && let Some(point) = Self::screen_to_pixel(region, position, image_rect)
             {
                 self.point = point;
             }
-            self.last_pointer = Some(position);
+            self.last_pointer = Some((ctx.viewport_id(), position));
         }
         let (ctrl, shift, keys, escape, refresh, pressed, released, secondary) =
             ctx.input(|input| {
@@ -386,20 +402,20 @@ impl RulerApp {
             if self.mode == RulerMode::Bounds {
                 self.copy_records(ctx, self.current_record());
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            close_overlay(ctx);
             return;
         }
         if secondary && !over_toolbar {
             if self.mode == RulerMode::Bounds {
                 if self.drag_start.take().is_none() {
                     if self.retained.is_empty() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        close_overlay(ctx);
                     } else {
                         self.retained.clear();
                     }
                 }
             } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                close_overlay(ctx);
             }
             return;
         }
@@ -421,17 +437,25 @@ impl RulerApp {
             if shift && let Some(record) = record {
                 self.retained.push(record);
             } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                close_overlay(ctx);
             }
         }
     }
 
-    fn draw_record(&self, painter: &egui::Painter, image: Rect, record: MeasurementRecord) {
+    fn draw_record(
+        &self,
+        painter: &egui::Painter,
+        image: Rect,
+        region: CaptureRegion,
+        record: MeasurementRecord,
+    ) {
         let color =
             parse_rgba(&self.settings.ruler.cross_color).unwrap_or(Color32::from_rgb(255, 69, 0));
         let stroke = Stroke::new(1.5_f32, color);
-        let map_x = |x: f32| image.left() + x / self.frame.width as f32 * image.width();
-        let map_y = |y: f32| image.top() + y / self.frame.height as f32 * image.height();
+        let map_x =
+            |x: f32| image.left() + (x - region.x as f32) / region.width as f32 * image.width();
+        let map_y =
+            |y: f32| image.top() + (y - region.y as f32) / region.height as f32 * image.height();
         let left = map_x(record.rect.left as f32);
         let right = map_x((record.rect.right + 1) as f32);
         let top = map_y(record.rect.top as f32);
@@ -497,6 +521,9 @@ impl RulerApp {
                 }
             }
         }
+        if !region.contains(record.anchor.x, record.anchor.y) {
+            return;
+        }
         let (show_width, show_height) = axes(record.mode);
         let text = record.rect.display_text(
             show_width,
@@ -527,50 +554,54 @@ impl RulerApp {
         );
     }
 
-    fn draw_measurements(&self, ctx: &egui::Context, image_rect: Rect) {
+    fn draw_measurements(&self, ctx: &egui::Context, image_rect: Rect, region: CaptureRegion) {
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Middle,
             "ruler-measurements".into(),
         ));
         for record in self.retained.iter().copied() {
-            self.draw_record(&painter, image_rect, record);
+            if record_intersects_region(record, region) {
+                self.draw_record(&painter, image_rect, region, record);
+            }
         }
-        if let Some(record) = self.current_record() {
-            self.draw_record(&painter, image_rect, record);
+        if let Some(record) = self
+            .current_record()
+            .filter(|record| record_intersects_region(*record, region))
+        {
+            self.draw_record(&painter, image_rect, region, record);
         }
     }
-}
 
-impl eframe::App for RulerApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.poll_refresh(ctx) {
+    fn render_view(&mut self, ctx: &egui::Context, view: OverlayView, refreshing: bool) {
+        self.overlay.apply_view_geometry(ctx, view);
+        if ctx.input(|input| input.viewport().close_requested()) {
+            close_overlay(ctx);
+            return;
+        }
+        if refreshing {
             ctx.set_cursor_icon(egui::CursorIcon::Progress);
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
                 .show(ctx, |_| {});
             return;
         }
+
         ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-        self.continuous_capture_tick(ctx);
         let live_transparent =
             self.settings.ruler.continuous_capture && self.frame.backend == CaptureBackend::X11;
         let image_rect = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
-                let rect = self.image_rect(ui.max_rect());
+                let rect = Self::image_rect(view.region, ui.max_rect());
                 if !live_transparent {
-                    self.texture.paint(ui.painter(), rect);
+                    self.texture.paint_region(ui.painter(), rect, view.region);
                 }
                 rect
             })
             .inner;
         let toolbar_rect = self.toolbar(ctx);
-        self.handle_input(ctx, image_rect, toolbar_rect);
-        self.draw_measurements(ctx, image_rect);
+        self.handle_input(ctx, image_rect, toolbar_rect, view.region);
+        self.draw_measurements(ctx, image_rect, view.region);
         if self.frame.backend == CaptureBackend::Portal {
             egui::Area::new("wayland-continuous-note".into())
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0])
@@ -592,6 +623,39 @@ impl eframe::App for RulerApp {
                 });
         }
     }
+}
+
+impl eframe::App for RulerApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let refreshing = self.poll_refresh(ctx);
+        if !refreshing {
+            self.continuous_capture_tick(ctx);
+        }
+
+        self.render_view(ctx, self.overlay.root(), refreshing);
+        let children = self.overlay.children().to_vec();
+        for view in children {
+            let builder =
+                self.overlay
+                    .child_viewport(&format!("Screen Ruler — {APP_NAME}"), true, view);
+            ctx.show_viewport_immediate(view.viewport_id, builder, |ctx, class| {
+                if class != egui::ViewportClass::Embedded {
+                    self.render_view(ctx, view, refreshing);
+                }
+            });
+        }
+    }
+}
+
+fn record_intersects_region(record: MeasurementRecord, region: CaptureRegion) -> bool {
+    record.rect.right.saturating_add(1) > region.x
+        && record.rect.bottom.saturating_add(1) > region.y
+        && record.rect.left < region.x.saturating_add(region.width)
+        && record.rect.top < region.y.saturating_add(region.height)
 }
 
 fn mode_button(ui: &mut egui::Ui, mode: RulerMode, selected: bool) -> egui::Response {

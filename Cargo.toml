@@ -31,7 +31,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "signal", "time"] }
-x11rb = { version = "0.14", features = ["randr"] }
+winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
+x11rb = { version = "0.14", features = ["randr", "resource_manager"] }
 
 [dev-dependencies]
 # Production only links the decoder. Tests enable writers so they can generate

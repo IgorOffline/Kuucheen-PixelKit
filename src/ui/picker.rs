@@ -1,5 +1,6 @@
 use super::{
-    TiledCaptureTexture, adjusted_zoom_level, configure_style, copy_text,
+    OverlayPlan, OverlayView, TiledCaptureTexture, adjusted_zoom_level, close_overlay,
+    configure_style, copy_text,
     loupe::{
         Loupe, LoupeDetails, LoupePlacement, capture_image_rect, draw_loupe as draw_shared_loupe,
         point_position, screen_to_pixel,
@@ -8,7 +9,7 @@ use super::{
 };
 use crate::{
     APP_NAME,
-    capture::{CaptureBackend, CaptureFrame, capture_screen},
+    capture::{CaptureBackend, CaptureFrame, CaptureRegion, capture_screen},
     color::{Rgb, format_template},
     config::{
         ActivationAction, ClickAction, ColorNamePosition, History, LoupeStyle,
@@ -33,13 +34,14 @@ pub fn run_picker(image_path: Option<&Path>) -> anyhow::Result<()> {
         )?
     };
     let title = format!("Color Picker — {APP_NAME}");
-    let options = overlay_options(&title);
+    let overlay = OverlayPlan::new(&frame);
+    let options = overlay_options(&title, &overlay);
     super::map_eframe(eframe::run_native(
         &title,
         options,
         Box::new(move |cc| {
             configure_style(&cc.egui_ctx);
-            Ok(Box::new(PickerApp::new(cc, settings, frame)))
+            Ok(Box::new(PickerApp::new(cc, settings, frame, overlay)))
         }),
     ))
 }
@@ -48,24 +50,32 @@ struct PickerApp {
     settings: Settings,
     frame: Arc<CaptureFrame>,
     texture: TiledCaptureTexture,
+    overlay: OverlayPlan,
     point: Point,
-    last_pointer: Option<Pos2>,
+    last_pointer: Option<(egui::ViewportId, Pos2)>,
     zoom_level: i32,
     wheel_remainder: f32,
     completed: bool,
 }
 
 impl PickerApp {
-    fn new(cc: &eframe::CreationContext<'_>, settings: Settings, frame: CaptureFrame) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        frame: CaptureFrame,
+        overlay: OverlayPlan,
+    ) -> Self {
+        let root = overlay.root().region;
         let point = Point {
-            x: frame.width / 2,
-            y: frame.height / 2,
+            x: root.x + root.width / 2,
+            y: root.y + root.height / 2,
         };
         let texture = TiledCaptureTexture::load(&cc.egui_ctx, "pixelkit-screen-capture", &frame);
         Self {
             settings,
             frame: Arc::new(frame),
             texture,
+            overlay,
             point,
             last_pointer: None,
             zoom_level: 2,
@@ -80,17 +90,17 @@ impl PickerApp {
             .unwrap_or_default()
     }
 
-    fn handle_input(&mut self, ctx: &egui::Context, image_rect: Rect) {
+    fn handle_input(&mut self, ctx: &egui::Context, image_rect: Rect, region: CaptureRegion) {
         let pointer = ctx.input(|input| input.pointer.hover_pos());
         if let Some(position) = pointer {
-            let moved = self
-                .last_pointer
-                .is_none_or(|last| last.distance(position) > 0.25);
+            let moved = self.last_pointer.is_none_or(|(viewport, last)| {
+                viewport != ctx.viewport_id() || last.distance(position) > 0.25
+            });
             if moved {
-                if let Some(point) = screen_to_pixel(&self.frame, position, image_rect) {
+                if let Some(point) = screen_to_pixel(region, position, image_rect) {
                     self.point = point;
                 }
-                self.last_pointer = Some(position);
+                self.last_pointer = Some((ctx.viewport_id(), position));
             }
         }
         let (
@@ -174,10 +184,10 @@ impl PickerApp {
                 eprintln!("PixelKit: failed to open editor: {error:#}");
             }
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        close_overlay(ctx);
     }
 
-    fn draw_loupe(&self, ctx: &egui::Context, image_rect: Rect) {
+    fn draw_loupe(&self, ctx: &egui::Context, image_rect: Rect, region: CaptureRegion) {
         let color = self.selected_color();
         let value = self
             .settings
@@ -185,7 +195,7 @@ impl PickerApp {
             .show_copied_value
             .then(|| format_template(color, self.settings.selected_format()));
         let name = self.settings.picker.show_color_name.then(|| color.name());
-        let selected_position = point_position(&self.frame, self.point, image_rect);
+        let selected_position = point_position(region, self.point, image_rect);
         let centered = self.settings.picker.loupe_style == LoupeStyle::Centered;
         let anchor = if centered {
             ctx.input(|input| input.pointer.hover_pos())
@@ -217,29 +227,80 @@ impl PickerApp {
             },
         );
     }
+
+    fn render_view(&mut self, ctx: &egui::Context, view: OverlayView) {
+        self.overlay.apply_view_geometry(ctx, view);
+        if ctx.input(|input| input.viewport().close_requested()) {
+            close_overlay(ctx);
+            return;
+        }
+        if self.settings.picker.change_cursor {
+            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(Color32::BLACK))
+            .show(ctx, |ui| {
+                let available = ui.max_rect();
+                let image_rect = capture_image_rect(view.region, available);
+                self.texture
+                    .paint_region(ui.painter(), image_rect, view.region);
+                self.handle_input(ctx, image_rect, view.region);
+                if view.region.contains(self.point.x, self.point.y) {
+                    let point_screen = point_position(view.region, self.point, image_rect);
+                    ui.painter().circle_stroke(
+                        point_screen,
+                        6.0,
+                        Stroke::new(1.5_f32, Color32::WHITE),
+                    );
+                    ui.painter().circle_stroke(
+                        point_screen,
+                        8.0,
+                        Stroke::new(1.0_f32, Color32::BLACK),
+                    );
+                    self.draw_loupe(ctx, image_rect, view.region);
+                }
+                let source = match self.frame.backend {
+                    CaptureBackend::X11 => "direct X11 capture",
+                    CaptureBackend::Portal => "Wayland portal snapshot",
+                    CaptureBackend::File => "image preview",
+                };
+                let help = format!(
+                    "Click / Enter to pick  •  arrows move 1 px  •  Shift+arrows move 10 px  •  wheel zooms  •  Esc closes  •  {}×{}  •  {source}",
+                    self.frame.width, self.frame.height
+                );
+                ui.painter().rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(available.left() + 10.0, available.bottom() - 36.0),
+                        Pos2::new(available.right() - 10.0, available.bottom() - 8.0),
+                    ),
+                    7.0,
+                    Color32::from_black_alpha(205),
+                );
+                ui.painter().text(
+                    Pos2::new(available.center().x, available.bottom() - 22.0),
+                    egui::Align2::CENTER_CENTER,
+                    help,
+                    FontId::proportional(13.0),
+                    Color32::WHITE,
+                );
+            });
+    }
 }
 
 impl eframe::App for PickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.settings.picker.change_cursor {
-            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        self.render_view(ctx, self.overlay.root());
+        let children = self.overlay.children().to_vec();
+        for view in children {
+            let builder =
+                self.overlay
+                    .child_viewport(&format!("Color Picker — {APP_NAME}"), false, view);
+            ctx.show_viewport_immediate(view.viewport_id, builder, |ctx, class| {
+                if class != egui::ViewportClass::Embedded {
+                    self.render_view(ctx, view);
+                }
+            });
         }
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::BLACK)).show(ctx, |ui| {
-            let available = ui.max_rect();
-            let image_rect = capture_image_rect(&self.frame, available);
-            self.texture.paint(ui.painter(), image_rect);
-            self.handle_input(ctx, image_rect);
-            let point_screen = point_position(&self.frame, self.point, image_rect);
-            ui.painter()
-                .circle_stroke(point_screen, 6.0, Stroke::new(1.5_f32, Color32::WHITE));
-            ui.painter()
-                .circle_stroke(point_screen, 8.0, Stroke::new(1.0_f32, Color32::BLACK));
-            let source = match self.frame.backend { CaptureBackend::X11 => "direct X11 capture", CaptureBackend::Portal => "Wayland portal snapshot", CaptureBackend::File => "image preview" };
-            let help = format!("Click / Enter to pick  •  arrows move 1 px  •  Shift+arrows move 10 px  •  wheel zooms  •  Esc closes  •  {}×{}  •  {source}", self.frame.width, self.frame.height);
-            ui.painter().rect_filled(Rect::from_min_max(Pos2::new(available.left() + 10.0, available.bottom() - 36.0), Pos2::new(available.right() - 10.0, available.bottom() - 8.0)), 7.0, Color32::from_black_alpha(205));
-            ui.painter().text(Pos2::new(available.center().x, available.bottom() - 22.0), egui::Align2::CENTER_CENTER, help, FontId::proportional(13.0), Color32::WHITE);
-            self.draw_loupe(ctx, image_rect);
-        });
     }
 }
 

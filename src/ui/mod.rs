@@ -7,7 +7,10 @@ mod ruler;
 mod scanner;
 
 use crate::{
-    APP_ID, APP_NAME, capture::CaptureFrame, color::Rgb, config::STANDARD_PICKER_MAX_ZOOM_LEVEL,
+    APP_ID, APP_NAME,
+    capture::{CaptureFrame, CaptureRegion, DesktopLayout},
+    color::Rgb,
+    config::STANDARD_PICKER_MAX_ZOOM_LEVEL,
 };
 use anyhow::{Result, anyhow};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, Vec2, ViewportBuilder};
@@ -92,19 +95,155 @@ fn native_options_with_min_size(size: [f32; 2], min_size: [f32; 2]) -> eframe::N
     }
 }
 
-fn overlay_options(title: &str) -> eframe::NativeOptions {
-    eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OverlayView {
+    viewport_id: egui::ViewportId,
+    region: CaptureRegion,
+    position: Pos2,
+    size: Vec2,
+}
+
+#[derive(Clone, Debug)]
+struct OverlayPlan {
+    views: Vec<OverlayView>,
+    separate_monitor_windows: bool,
+}
+
+impl OverlayPlan {
+    fn new(frame: &CaptureFrame) -> Self {
+        if let Some(layout) = &frame.desktop_layout
+            && !layout.monitors.is_empty()
+            && layout.scale_factor.is_finite()
+            && layout.scale_factor > 0.0
+        {
+            let views = monitor_overlay_views(layout);
+            return Self {
+                views,
+                separate_monitor_windows: true,
+            };
+        }
+
+        Self {
+            views: vec![OverlayView {
+                viewport_id: egui::ViewportId::ROOT,
+                region: frame.full_region(),
+                position: Pos2::ZERO,
+                size: Vec2::new(frame.width as f32, frame.height as f32),
+            }],
+            separate_monitor_windows: false,
+        }
+    }
+
+    fn root(&self) -> OverlayView {
+        self.views[0]
+    }
+
+    fn children(&self) -> &[OverlayView] {
+        &self.views[1..]
+    }
+
+    fn child_viewport(&self, title: &str, transparent: bool, view: OverlayView) -> ViewportBuilder {
+        debug_assert!(self.separate_monitor_windows);
+        monitor_viewport(title, view)
+            .with_transparent(transparent)
+            .with_active(false)
+    }
+
+    fn apply_view_geometry(&self, ctx: &egui::Context, view: OverlayView) {
+        let viewport = ctx.input(|input| input.viewport().clone());
+        if self.separate_monitor_windows {
+            let target = Rect::from_min_size(view.position, view.size);
+            let on_target_monitor = viewport
+                .outer_rect
+                .is_some_and(|rect| target.contains(rect.center()));
+            if viewport.fullscreen == Some(true) && on_target_monitor {
+                return;
+            }
+            if viewport.fullscreen == Some(true) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
+            if on_target_monitor {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(view.position));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(view.size));
+            }
+        } else if viewport.fullscreen != Some(true) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
+    }
+}
+
+fn monitor_overlay_views(layout: &DesktopLayout) -> Vec<OverlayView> {
+    let active = layout.active_monitor.min(layout.monitors.len() - 1);
+    let order =
+        std::iter::once(active).chain((0..layout.monitors.len()).filter(|index| *index != active));
+    order
+        .enumerate()
+        .map(|(view_index, monitor_index)| {
+            let region = layout.monitors[monitor_index];
+            let scale = layout.scale_factor;
+            OverlayView {
+                viewport_id: if view_index == 0 {
+                    egui::ViewportId::ROOT
+                } else {
+                    egui::ViewportId::from_hash_of((
+                        "pixelkit-monitor-overlay",
+                        region.x,
+                        region.y,
+                        region.width,
+                        region.height,
+                    ))
+                },
+                region,
+                position: Pos2::new(region.x as f32 / scale, region.y as f32 / scale),
+                size: Vec2::new(region.width as f32 / scale, region.height as f32 / scale),
+            }
+        })
+        .collect()
+}
+
+fn monitor_viewport(title: &str, view: OverlayView) -> ViewportBuilder {
+    ViewportBuilder::default()
+        .with_app_id(APP_ID)
+        .with_title(title)
+        .with_position(view.position)
+        .with_inner_size(view.size)
+        .with_resizable(false)
+        .with_decorations(false)
+        .with_always_on_top()
+        .with_icon(app_icon())
+}
+
+fn overlay_options(title: &str, plan: &OverlayPlan) -> eframe::NativeOptions {
+    let viewport = if plan.separate_monitor_windows {
+        monitor_viewport(title, plan.root()).with_active(true)
+    } else {
+        ViewportBuilder::default()
             .with_app_id(APP_ID)
             .with_title(title)
             .with_fullscreen(true)
             .with_decorations(false)
             .with_always_on_top()
             .with_active(true)
-            .with_icon(app_icon()),
+            .with_icon(app_icon())
+    };
+    let mut options = eframe::NativeOptions {
+        viewport,
         renderer: eframe::Renderer::Glow,
         ..Default::default()
+    };
+    if plan.separate_monitor_windows {
+        options.event_loop_builder = Some(Box::new(|builder| {
+            use winit::platform::x11::EventLoopBuilderExtX11 as _;
+            builder.with_x11();
+        }));
     }
+    options
+}
+
+fn close_overlay(ctx: &egui::Context) {
+    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
 }
 
 fn app_icon() -> Arc<egui::IconData> {
@@ -341,29 +480,43 @@ impl TiledCaptureTexture {
         }
     }
 
-    fn paint(&self, painter: &egui::Painter, target: Rect) {
-        let source_width = self.source_size[0] as f32;
-        let source_height = self.source_size[1] as f32;
+    fn paint_region(&self, painter: &egui::Painter, target: Rect, source: CaptureRegion) {
+        let source_left = source.x;
+        let source_top = source.y;
+        let source_right = source.x.saturating_add(source.width);
+        let source_bottom = source.y.saturating_add(source.height);
         for tile in &self.tiles {
             let region = tile.region;
+            let left = source_left.max(region.x);
+            let top = source_top.max(region.y);
+            let right = source_right.min(region.x.saturating_add(region.width));
+            let bottom = source_bottom.min(region.y.saturating_add(region.height));
+            if left >= right || top >= bottom {
+                continue;
+            }
             let tile_rect = Rect::from_min_max(
                 Pos2::new(
-                    target.left() + region.x as f32 / source_width * target.width(),
-                    target.top() + region.y as f32 / source_height * target.height(),
+                    target.left() + (left - source.x) as f32 / source.width as f32 * target.width(),
+                    target.top() + (top - source.y) as f32 / source.height as f32 * target.height(),
                 ),
                 Pos2::new(
                     target.left()
-                        + (region.x + region.width) as f32 / source_width * target.width(),
+                        + (right - source.x) as f32 / source.width as f32 * target.width(),
                     target.top()
-                        + (region.y + region.height) as f32 / source_height * target.height(),
+                        + (bottom - source.y) as f32 / source.height as f32 * target.height(),
                 ),
             );
-            painter.image(
-                tile.texture.id(),
-                tile_rect,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
+            let uv = Rect::from_min_max(
+                Pos2::new(
+                    (left - region.x) as f32 / region.width as f32,
+                    (top - region.y) as f32 / region.height as f32,
+                ),
+                Pos2::new(
+                    (right - region.x) as f32 / region.width as f32,
+                    (bottom - region.y) as f32 / region.height as f32,
+                ),
             );
+            painter.image(tile.texture.id(), tile_rect, uv, Color32::WHITE);
         }
     }
 }
@@ -629,6 +782,51 @@ mod tests {
                 height: 1,
             })
         );
+    }
+
+    #[test]
+    fn active_monitor_becomes_the_root_overlay_at_native_scale() {
+        let left = CaptureRegion {
+            x: 0,
+            y: 0,
+            width: 2240,
+            height: 1400,
+        };
+        let right = CaptureRegion {
+            x: 2240,
+            y: 0,
+            width: 2880,
+            height: 1620,
+        };
+        let views = monitor_overlay_views(&DesktopLayout {
+            width: 5120,
+            height: 1620,
+            scale_factor: 1.5,
+            monitors: vec![left, right],
+            active_monitor: 1,
+        });
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].viewport_id, egui::ViewportId::ROOT);
+        assert_eq!(views[0].region, right);
+        assert_eq!(views[0].position, Pos2::new(2240.0 / 1.5, 0.0));
+        assert_eq!(views[0].size, Vec2::new(1920.0, 1080.0));
+        assert_eq!(views[1].region, left);
+    }
+
+    #[test]
+    fn missing_monitor_layout_keeps_one_full_capture_view() {
+        let frame = CaptureFrame {
+            width: 5120,
+            height: 1620,
+            rgba: Vec::new(),
+            dpi: 96.0,
+            backend: crate::capture::CaptureBackend::Portal,
+            desktop_layout: None,
+        };
+        let plan = OverlayPlan::new(&frame);
+        assert!(!plan.separate_monitor_windows);
+        assert_eq!(plan.views.len(), 1);
+        assert_eq!(plan.root().region, frame.full_region());
     }
 
     #[test]

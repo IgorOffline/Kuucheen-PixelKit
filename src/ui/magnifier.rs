@@ -1,5 +1,6 @@
 use super::{
-    TiledCaptureTexture, adjusted_zoom_level, configure_style,
+    OverlayPlan, OverlayView, TiledCaptureTexture, adjusted_zoom_level, close_overlay,
+    configure_style,
     loupe::{
         Loupe, LoupePlacement, capture_image_rect, draw_loupe as draw_shared_loupe, point_position,
         screen_to_pixel,
@@ -8,7 +9,7 @@ use super::{
 };
 use crate::{
     APP_NAME,
-    capture::{CaptureBackend, CaptureFrame, capture_screen},
+    capture::{CaptureBackend, CaptureFrame, CaptureRegion, capture_screen},
     config::{LoupeStyle, Settings},
     measurement::Point,
 };
@@ -25,13 +26,14 @@ pub fn run_magnifier(image_path: Option<&Path>) -> anyhow::Result<()> {
         capture_screen(settings.magnifier.interactive_portal, FALLBACK_DPI)?
     };
     let title = format!("Magnifier — {APP_NAME}");
-    let options = overlay_options(&title);
+    let overlay = OverlayPlan::new(&frame);
+    let options = overlay_options(&title, &overlay);
     super::map_eframe(eframe::run_native(
         &title,
         options,
         Box::new(move |cc| {
             configure_style(&cc.egui_ctx);
-            Ok(Box::new(MagnifierApp::new(cc, settings, frame)))
+            Ok(Box::new(MagnifierApp::new(cc, settings, frame, overlay)))
         }),
     ))
 }
@@ -40,16 +42,23 @@ struct MagnifierApp {
     settings: Settings,
     frame: Arc<CaptureFrame>,
     texture: TiledCaptureTexture,
+    overlay: OverlayPlan,
     point: Point,
     zoom_level: i32,
     wheel_remainder: f32,
 }
 
 impl MagnifierApp {
-    fn new(cc: &eframe::CreationContext<'_>, settings: Settings, frame: CaptureFrame) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        frame: CaptureFrame,
+        overlay: OverlayPlan,
+    ) -> Self {
+        let root = overlay.root().region;
         let point = Point {
-            x: frame.width / 2,
-            y: frame.height / 2,
+            x: root.x + root.width / 2,
+            y: root.y + root.height / 2,
         };
         let texture = TiledCaptureTexture::load(&cc.egui_ctx, "pixelkit-magnifier-capture", &frame);
         let zoom_level = i32::from(settings.magnifier.initial_zoom_level);
@@ -57,15 +66,16 @@ impl MagnifierApp {
             settings,
             frame: Arc::new(frame),
             texture,
+            overlay,
             point,
             zoom_level,
             wheel_remainder: 0.0,
         }
     }
 
-    fn handle_input(&mut self, ctx: &egui::Context, image_rect: Rect) {
+    fn handle_input(&mut self, ctx: &egui::Context, image_rect: Rect, region: CaptureRegion) {
         if let Some(position) = ctx.input(|input| input.pointer.hover_pos())
-            && let Some(point) = screen_to_pixel(&self.frame, position, image_rect)
+            && let Some(point) = screen_to_pixel(region, position, image_rect)
         {
             self.point = point;
         }
@@ -84,14 +94,14 @@ impl MagnifierApp {
             input.key_pressed(egui::Key::Escape) || input.key_pressed(egui::Key::Backspace)
         });
         if close {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            close_overlay(ctx);
         }
     }
 
-    fn draw_loupe(&self, ctx: &egui::Context, image_rect: Rect) {
+    fn draw_loupe(&self, ctx: &egui::Context, image_rect: Rect, region: CaptureRegion) {
         let anchor = ctx
             .input(|input| input.pointer.hover_pos())
-            .unwrap_or_else(|| point_position(&self.frame, self.point, image_rect));
+            .unwrap_or_else(|| point_position(region, self.point, image_rect));
         let tooltip = self.settings.magnifier.style == LoupeStyle::Tooltip;
         draw_shared_loupe(
             ctx,
@@ -112,10 +122,13 @@ impl MagnifierApp {
             },
         );
     }
-}
 
-impl eframe::App for MagnifierApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn render_view(&mut self, ctx: &egui::Context, view: OverlayView) {
+        self.overlay.apply_view_geometry(ctx, view);
+        if ctx.input(|input| input.viewport().close_requested()) {
+            close_overlay(ctx);
+            return;
+        }
         if self.settings.magnifier.change_cursor {
             ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
         }
@@ -123,9 +136,10 @@ impl eframe::App for MagnifierApp {
             .frame(egui::Frame::new().fill(Color32::BLACK))
             .show(ctx, |ui| {
                 let available = ui.max_rect();
-                let image_rect = capture_image_rect(&self.frame, available);
-                self.texture.paint(ui.painter(), image_rect);
-                self.handle_input(ctx, image_rect);
+                let image_rect = capture_image_rect(view.region, available);
+                self.texture
+                    .paint_region(ui.painter(), image_rect, view.region);
+                self.handle_input(ctx, image_rect, view.region);
 
                 let source = match self.frame.backend {
                     CaptureBackend::X11 => "direct X11 capture",
@@ -158,7 +172,26 @@ impl eframe::App for MagnifierApp {
                     FontId::proportional(13.0),
                     Color32::WHITE,
                 );
-                self.draw_loupe(ctx, image_rect);
+                if view.region.contains(self.point.x, self.point.y) {
+                    self.draw_loupe(ctx, image_rect, view.region);
+                }
             });
+    }
+}
+
+impl eframe::App for MagnifierApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.render_view(ctx, self.overlay.root());
+        let children = self.overlay.children().to_vec();
+        for view in children {
+            let builder =
+                self.overlay
+                    .child_viewport(&format!("Magnifier — {APP_NAME}"), false, view);
+            ctx.show_viewport_immediate(view.viewport_id, builder, |ctx, class| {
+                if class != egui::ViewportClass::Embedded {
+                    self.render_view(ctx, view);
+                }
+            });
+        }
     }
 }

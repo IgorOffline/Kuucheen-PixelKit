@@ -27,6 +27,7 @@ https://github.com/user-attachments/assets/fd06e8b0-96c1-4ea9-b514-56c151987239
 ### Color Picker, Magnifier, and editor
 
 - Pick any captured pixel with an always-on-top full-screen overlay.
+- Place each monitor's capture back on that monitor.
 - 13×13 loupe with tooltip and pointer-centered styles with up to 255
   wheel-controlled zoom levels.
 - Standalone magnifier with centered-grid and tooltip styles plus
@@ -100,7 +101,7 @@ GUI, decoder, or screen capture until a tool is launched.
 | Capability | X11 | Wayland / Flatpak |
 |---|---|---|
 | Screen capture | Immediate direct capture | Screenshot portal; the compositor may ask for permission or a target |
-| Picker, scanner, and ruler overlays | Full captured desktop | Portal snapshot scaled into a full-screen precision canvas |
+| Picker, magnifier, scanner, and ruler overlays | One exact full-screen crop per monitor | One exact crop per monitor when XWayland geometry matches the portal image; otherwise one fullscreen portal snapshot |
 | Global shortcuts | X11 key grab | GlobalShortcuts portal; compositor chooses/grants the final binding |
 | Continuous ruler background | Live transparent recapture | Manual **Recapture** / `R` after underlying content changes, because the Screenshot portal is intentionally request-based |
 | Clipboard | Native X11 selection | Native Wayland data control plus GUI clipboard fallback |
@@ -108,6 +109,9 @@ GUI, decoder, or screen capture until a tool is launched.
 Wayland does not let ordinary applications silently read other windows or
 install global input hooks. PixelKit respects that boundary. A portal dialog is
 part of the desktop security model, not a missing package permission. On a
+Wayland session, PixelKit still captures through the portal. It uses XWayland
+only to position the overlay windows. If matching monitor geometry is
+unavailable, PixelKit displays the portal snapshot in one fullscreen overlay. On a
 desktop without the GlobalShortcuts portal, assign these commands in the
 desktop's keyboard settings:
 

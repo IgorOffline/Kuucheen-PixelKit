@@ -2376,6 +2376,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "winit",
  "x11rb 0.14.0",
 ]
 

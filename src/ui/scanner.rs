@@ -1,11 +1,11 @@
 use super::{
-    SettingControlText, TiledCaptureTexture, centered_setting_control, centered_setting_label,
-    centered_setting_row, centered_setting_spinner, configure_style, copy_text, overlay_options,
-    parse_rgba,
+    OverlayPlan, OverlayView, SettingControlText, TiledCaptureTexture, centered_setting_control,
+    centered_setting_label, centered_setting_row, centered_setting_spinner, close_overlay,
+    configure_style, copy_text, overlay_options, parse_rgba,
 };
 use crate::{
     APP_ID, APP_NAME,
-    capture::{CaptureFrame, capture_screen},
+    capture::{CaptureFrame, CaptureRegion, capture_screen},
     code_detection::{DetectedCode, SourceRect, capture_luma, detect_codes_in_luma_with_updates},
     config::{DEFAULT_SCANNER_HIGHLIGHT_COLOR, Settings},
 };
@@ -29,14 +29,15 @@ pub fn run_scanner(image_path: Option<&Path>) -> anyhow::Result<()> {
         )?
     };
     let title = format!("QR & Barcode Scanner — {APP_NAME}");
-    let mut options = overlay_options(&title);
+    let overlay = OverlayPlan::new(&frame);
+    let mut options = overlay_options(&title, &overlay);
     options.viewport = options.viewport.with_transparent(true);
     super::map_eframe(eframe::run_native(
         &title,
         options,
         Box::new(move |cc| {
             configure_style(&cc.egui_ctx);
-            Ok(Box::new(ScannerApp::new(cc, settings, frame)))
+            Ok(Box::new(ScannerApp::new(cc, settings, frame, overlay)))
         }),
     ))
 }
@@ -63,6 +64,7 @@ struct ScannerApp {
     settings: Settings,
     frame: CaptureFrame,
     texture: TiledCaptureTexture,
+    overlay: OverlayPlan,
     codes: Vec<DetectedCode>,
     selected: Option<usize>,
     scan_task: Option<ScanTask>,
@@ -73,7 +75,12 @@ struct ScannerApp {
 }
 
 impl ScannerApp {
-    fn new(cc: &eframe::CreationContext<'_>, settings: Settings, frame: CaptureFrame) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        frame: CaptureFrame,
+        overlay: OverlayPlan,
+    ) -> Self {
         let texture =
             TiledCaptureTexture::load(&cc.egui_ctx, "pixelkit-code-scanner-capture", &frame);
         let (scan_task, warning) = match start_scan(&frame) {
@@ -84,6 +91,7 @@ impl ScannerApp {
             settings,
             frame,
             texture,
+            overlay,
             codes: Vec::new(),
             selected: None,
             scan_task,
@@ -94,15 +102,12 @@ impl ScannerApp {
         }
     }
 
-    fn image_rect(&self, available: Rect) -> Rect {
-        let scale = (available.width() / self.frame.width as f32)
-            .min(available.height() / self.frame.height as f32);
+    fn image_rect(region: CaptureRegion, available: Rect) -> Rect {
+        let scale = (available.width() / region.width as f32)
+            .min(available.height() / region.height as f32);
         Rect::from_center_size(
             available.center(),
-            Vec2::new(
-                self.frame.width as f32 * scale,
-                self.frame.height as f32 * scale,
-            ),
+            Vec2::new(region.width as f32 * scale, region.height as f32 * scale),
         )
     }
 
@@ -165,6 +170,7 @@ impl ScannerApp {
                 Ok(frame) if frame.width > 0 && frame.height > 0 => {
                     self.frame = frame;
                     self.texture.update(ctx, &self.frame);
+                    self.overlay = OverlayPlan::new(&self.frame);
                     match start_scan(&self.frame) {
                         Ok(task) => {
                             self.scan_task = Some(task);
@@ -362,7 +368,7 @@ impl ScannerApp {
                                 self.begin_refresh(ctx);
                             }
                             if ui.button("Close").clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                close_overlay(ctx);
                             }
                         });
                     })
@@ -390,11 +396,11 @@ impl ScannerApp {
             || (secondary && pointer.is_none_or(|point| !toolbar.contains(point))))
             && self.selected.take().is_none()
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            close_overlay(ctx);
         }
     }
 
-    fn draw_detections(&mut self, ui: &mut egui::Ui, image: Rect) {
+    fn draw_detections(&mut self, ui: &mut egui::Ui, image: Rect, region: CaptureRegion) {
         let accent = parse_rgba(&self.settings.scanner.highlight_color).unwrap_or_else(|| {
             parse_rgba(DEFAULT_SCANNER_HIGHLIGHT_COLOR)
                 .expect("the default scanner highlight color must be valid RGBA")
@@ -404,7 +410,10 @@ impl ScannerApp {
             let Some(source) = code.bounds else {
                 continue;
             };
-            let mut target = map_source_rect(source, &self.frame, image);
+            if !source_rect_intersects_region(source, region) {
+                continue;
+            }
+            let mut target = map_source_rect(source, region, image);
             let minimum = Vec2::splat(28.0);
             if target.width() < minimum.x || target.height() < minimum.y {
                 target = Rect::from_center_size(target.center(), target.size().max(minimum));
@@ -589,6 +598,38 @@ impl ScannerApp {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
     }
+
+    fn render_view(&mut self, ctx: &egui::Context, view: OverlayView, refreshing: bool) {
+        self.overlay.apply_view_geometry(ctx, view);
+        if ctx.input(|input| input.viewport().close_requested()) {
+            close_overlay(ctx);
+            return;
+        }
+        if refreshing {
+            ctx.set_cursor_icon(egui::CursorIcon::Progress);
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
+                .show(ctx, |_| {});
+            return;
+        }
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(Color32::BLACK))
+            .show(ctx, |ui| {
+                let available = ui.max_rect();
+                let image = Self::image_rect(view.region, available);
+                self.texture.paint_region(ui.painter(), image, view.region);
+                ui.painter()
+                    .rect_filled(available, 0.0, Color32::from_black_alpha(34));
+                self.draw_detections(ui, image, view.region);
+            });
+        let toolbar = self.toolbar(ctx);
+        self.handle_input(ctx, toolbar);
+        if ctx.input(|input| input.viewport().focused.unwrap_or(false)) {
+            self.details(ctx);
+        }
+        self.bottom_message(ctx);
+    }
 }
 
 impl eframe::App for ScannerApp {
@@ -598,29 +639,25 @@ impl eframe::App for ScannerApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_link(ctx);
-        if self.poll_refresh(ctx) {
-            ctx.set_cursor_icon(egui::CursorIcon::Progress);
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
-                .show(ctx, |_| {});
-            return;
+        let refreshing = self.poll_refresh(ctx);
+        if !refreshing {
+            self.poll_scan(ctx);
         }
-        self.poll_scan(ctx);
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(Color32::BLACK))
-            .show(ctx, |ui| {
-                let available = ui.max_rect();
-                let image = self.image_rect(available);
-                self.texture.paint(ui.painter(), image);
-                ui.painter()
-                    .rect_filled(available, 0.0, Color32::from_black_alpha(34));
-                self.draw_detections(ui, image);
+        self.render_view(ctx, self.overlay.root(), refreshing);
+        let children = self.overlay.children().to_vec();
+        for view in children {
+            let builder = self.overlay.child_viewport(
+                &format!("QR & Barcode Scanner — {APP_NAME}"),
+                true,
+                view,
+            );
+            ctx.show_viewport_immediate(view.viewport_id, builder, |ctx, class| {
+                if class != egui::ViewportClass::Embedded {
+                    self.render_view(ctx, view, refreshing);
+                }
             });
-        let toolbar = self.toolbar(ctx);
-        self.handle_input(ctx, toolbar);
-        self.details(ctx);
-        self.bottom_message(ctx);
+        }
     }
 }
 
@@ -642,13 +679,21 @@ fn start_scan(frame: &CaptureFrame) -> std::result::Result<ScanTask, String> {
     Ok(ScanTask { receiver })
 }
 
-fn map_source_rect(source: SourceRect, frame: &CaptureFrame, image: Rect) -> Rect {
-    let map_x = |x: f32| image.left() + x / frame.width as f32 * image.width();
-    let map_y = |y: f32| image.top() + y / frame.height as f32 * image.height();
+fn map_source_rect(source: SourceRect, region: CaptureRegion, image: Rect) -> Rect {
+    let map_x = |x: f32| image.left() + (x - region.x as f32) / region.width as f32 * image.width();
+    let map_y =
+        |y: f32| image.top() + (y - region.y as f32) / region.height as f32 * image.height();
     Rect::from_min_max(
         Pos2::new(map_x(source.left), map_y(source.top)),
         Pos2::new(map_x(source.right), map_y(source.bottom)),
     )
+}
+
+fn source_rect_intersects_region(source: SourceRect, region: CaptureRegion) -> bool {
+    source.right > region.x as f32
+        && source.bottom > region.y as f32
+        && source.left < region.x.saturating_add(region.width) as f32
+        && source.top < region.y.saturating_add(region.height) as f32
 }
 
 fn scaled_alpha(alpha: u8, maximum: u8) -> u8 {
@@ -754,5 +799,36 @@ mod tests {
             contrasting_badge_text(Color32::from_rgba_unmultiplied(255, 255, 255, 64)),
             Color32::from_black_alpha(64)
         );
+    }
+
+    #[test]
+    fn detection_geometry_maps_into_its_monitor_crop() {
+        let region = CaptureRegion {
+            x: 1920,
+            y: 100,
+            width: 2560,
+            height: 1440,
+        };
+        let source = SourceRect {
+            left: 2176.0,
+            top: 244.0,
+            right: 2432.0,
+            bottom: 388.0,
+        };
+        let image = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 720.0));
+        assert!(source_rect_intersects_region(source, region));
+        assert_eq!(
+            map_source_rect(source, region, image),
+            Rect::from_min_max(Pos2::new(128.0, 72.0), Pos2::new(256.0, 144.0))
+        );
+        assert!(!source_rect_intersects_region(
+            SourceRect {
+                left: 10.0,
+                top: 10.0,
+                right: 100.0,
+                bottom: 100.0,
+            },
+            region,
+        ));
     }
 }
