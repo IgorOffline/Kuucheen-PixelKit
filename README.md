@@ -1,4 +1,4 @@
-![PixelKit — precision tools for Linux](docs/media-thumbnail-5to1.png)
+![PixelKit precision tools for Linux](docs/media-thumbnail-5to1.png)
 
 # PixelKit
 
@@ -9,111 +9,114 @@
 [![Rust 1.88+](https://img.shields.io/badge/Rust-1.88%2B-000000?style=flat&logo=rust&logoColor=white)](Cargo.toml)
 [![Linux: X11 + Wayland](https://img.shields.io/badge/Linux-X11%20%2B%20Wayland-FCC624?style=flat&logo=linux&logoColor=black)](#x11-and-wayland-behavior)
 
-PixelKit is a native Linux precision-tool suite built around the Microsoft
-PowerToys **Color Picker** and **Screen Ruler** workflows, with an integrated QR
-and barcode scanner. It is written in Rust, ships as one process-on-demand
-binary, stores everything locally, and supports both X11 and Wayland without
-privileged input or capture hooks.
+PixelKit brings the Microsoft PowerToys Color Picker and Screen Ruler workflows
+to Linux. It also includes a standalone magnifier and a QR and barcode scanner.
+The whole application ships as one Rust binary and keeps its data on your
+machine. It works on X11 and Wayland without privileged input or capture hooks.
 
-> PixelKit is independent of Microsoft and PowerToys. PowerToys was used as the
-> MIT-licensed behavioral reference included beside this project.
+> PixelKit is independent of Microsoft and PowerToys. This project uses the
+> adjacent PowerToys source tree as an MIT-licensed behavioral reference.
 
-## See PixelKit in action
+## Demo
 
 https://github.com/user-attachments/assets/fd06e8b0-96c1-4ea9-b514-56c151987239
 
-## Features
+## What PixelKit does
 
-### Color Picker, Magnifier, and editor
+### Color picker, magnifier, and editor
 
-- Pick any captured pixel with an always-on-top full-screen overlay.
-- Place each monitor's capture back on that monitor.
-- 13×13 loupe with tooltip and pointer-centered styles with up to 255
-  wheel-controlled zoom levels.
-- Standalone magnifier with centered-grid and tooltip styles plus
-  configurable starting/maximum zoom, grid size, cursor, Wayland capture
-  behavior, and global shortcut.
-- Arrow-key movement at one pixel; Shift+arrow movement at ten pixels.
-- Primary, middle, and secondary click actions: pick then edit, pick and close,
-  or close without copying.
-- Enter/Space to pick and Escape/Backspace to cancel; Escape also closes the
-  editor opened after a pick.
-- Full-resolution, losslessly tiled capture rendering on displays larger than
-  the GPU's single-texture limit.
-- Persistent, de-duplicated history with configurable limit.
-- Editable RGB and HSV controls, three/six-digit HEX input, and four related
-  color variations.
-- Nearest human-readable color names using the PowerToys bucket algorithm.
-- Export history as JSON or text, grouped by color or by format.
-- Sixteen built-in representations: HEX, RGB, HSL, HSV, CMYK, HSB, HSI, HWB,
-  NCol, CIE XYZ, CIE LAB, Oklab, Oklch, VEC4, Decimal, and HEX Int.
-- PowerToys-compatible custom format tokens such as `%ReX`, `%Gr`, `%Hu`,
-  `%Sl`, `%Na`, and the full CIE/Oklab parameter set.
+The color picker is a fullscreen overlay that samples the original,
+full-resolution capture. On a multi-monitor setup, each capture appears on the
+monitor it came from. Large captures are split into lossless GPU-safe tiles
+instead of being resized.
 
-### QR & Barcode Scanner
+- The 13×13 loupe has tooltip and pointer-centered layouts, with up to 255 zoom
+  levels controlled by the mouse wheel.
+- The standalone magnifier has centered-grid and tooltip layouts. Its starting
+  and maximum zoom, grid size, cursor, Wayland capture behavior, and shortcut
+  are configurable.
+- Arrow keys move one pixel. Hold Shift to move ten pixels at a time.
+- Primary, middle, and secondary clicks can pick then edit, pick and close, or
+  close without copying.
+- Enter and Space pick a color. Escape and Backspace cancel. Escape also closes
+  the editor opened after a pick.
+- PixelKit keeps a de-duplicated color history; you choose how many entries it
+  retains.
+- The editor has RGB and HSV controls, three- or six-digit HEX input, four
+  related color variations, and human-readable names based on the PowerToys
+  bucket algorithm.
+- History can be exported as JSON or text, grouped by color or format.
+- Sixteen formats are built in: HEX, RGB, HSL, HSV, CMYK, HSB, HSI, HWB, NCol,
+  CIE XYZ, CIE LAB, Oklab, Oklch, VEC4, Decimal, and HEX Int.
+- Custom formats support PowerToys tokens such as `%ReX`, `%Gr`, `%Hu`, `%Sl`,
+  `%Na`, and the full CIE and Oklab parameter set.
 
-- Automatically scans the original full-resolution capture without blocking
-  the overlay event loop.
-- Detects multiple codes in one image and gives every result a numbered,
-  clickable on-screen highlight.
-- Uses a configurable RGBA color and opacity for detection outlines and number
-  badges.
-- Supports QR and Micro QR, Data Matrix, Aztec, PDF417, Code 39/93/128, EAN,
-  UPC, ITF, Codabar, GS1 DataBar, Telepen, and MaxiCode.
-- Shows the decoded format and complete text, with one-click clipboard copy.
-- Recognizes HTTP(S) content and offers an explicit **Open link** action through
-  the desktop portal after the destination has been shown.
-- Recapture / `R` takes and scans a fresh snapshot without photographing the
+### QR and barcode scanner
+
+The scanner checks the original full-resolution capture on a worker thread, so
+the overlay stays responsive.
+
+- Multiple codes in one image get numbered, clickable highlights.
+- Outline and number-badge color and opacity are configurable.
+- Supported formats include QR, Micro QR, Data Matrix, Aztec, PDF417, Code 39,
+  Code 93, Code 128, EAN, UPC, ITF, Codabar, GS1 DataBar, Telepen, and MaxiCode.
+- The result view shows the decoded format and complete text, with a button to
+  copy it to the clipboard.
+- HTTP and HTTPS results get an explicit `Open link` action. PixelKit shows the
+  destination first, then hands it to the desktop portal.
+- `Recapture` or `R` takes a new snapshot and scans it without including the
   PixelKit overlay.
 
-### Screen Ruler
+### Screen ruler
 
-- Bounds/rectangle measurement.
-- Cross, horizontal, and vertical same-color spacing measurement.
-- Sum-of-RGB or per-channel edge tolerance, directly typeable from 0–255 and
-  adjustable by mouse wheel in 15-point steps.
-- Configurable crosshair color and end caps.
-- Pixels, inches, centimetres, and millimetres, using X11 physical display data
-  or a configurable Wayland fallback DPI.
-- Shift-click retains multiple measurements; clipboard output contains every
+The ruler measures rectangles and same-color spacing in cross, horizontal, and
+vertical modes.
+
+- Set a sum-of-RGB or per-channel edge tolerance from 0 to 255. The mouse wheel
+  adjusts it in 15-point steps.
+- Configure the crosshair color and end caps.
+- Read measurements in pixels, inches, centimetres, or millimetres. PixelKit
+  uses physical display data on X11 and a configurable fallback DPI on Wayland.
+- Shift-click keeps several measurements on screen. Copying includes every
   retained measurement.
-- Touch/pointer input, right-click cancellation, Ctrl+1…4 tool selection, and
-  non-blocking snapshot recapture.
-- X11 continuous capture uses a transparent blank/capture cycle so PixelKit's
-  own lines are excluded from the sampled image.
+- Touch and pointer input are supported. Right-click cancels, `Ctrl+1` through
+  `Ctrl+4` selects a tool, and snapshot recapture does not block the UI.
+- During continuous capture on X11, PixelKit uses a transparent blank/capture
+  cycle so its own lines do not appear in the sampled image.
 
 ### Linux integration
 
 - Direct, low-latency X11 root capture and native key grabs.
 - `xdg-desktop-portal` Screenshot and GlobalShortcuts interfaces on Wayland and
   inside Flatpak.
-- A lightweight background mode that does no screen polling while idle.
+- A background shortcut daemon that does not poll the screen while idle.
 - Desktop actions, AppStream metadata, scalable and high-resolution icons, man
   page, and systemd user unit.
-- No telemetry, cloud service, root helper, or setuid binary. Code detection is
-  fully local; only an explicitly opened decoded link is handed to the desktop.
+- No telemetry, cloud service, root helper, or setuid binary. Decoded content
+  stays local. Only a link you choose to open is handed to the desktop.
 
-The shortcut daemon blocks on events while idle; it does not initialize the
-GUI, decoder, or screen capture until a tool is launched.
+The shortcut daemon waits for events while idle. It does not initialize the GUI,
+decoder, or screen capture until you launch a tool.
 
 ## X11 and Wayland behavior
 
-| Capability | X11 | Wayland / Flatpak |
+| Capability | X11 | Wayland and Flatpak |
 |---|---|---|
-| Screen capture | Immediate direct capture | Screenshot portal; the compositor may ask for permission or a target |
-| Picker, magnifier, scanner, and ruler overlays | One exact full-screen crop per monitor | One exact crop per monitor when XWayland geometry matches the portal image; otherwise one fullscreen portal snapshot |
-| Global shortcuts | X11 key grab | GlobalShortcuts portal; compositor chooses/grants the final binding |
-| Continuous ruler background | Live transparent recapture | Manual **Recapture** / `R` after underlying content changes, because the Screenshot portal is intentionally request-based |
+| Screen capture | Immediate direct capture | Screenshot portal. The compositor may ask for permission or a target |
+| Picker, magnifier, scanner, and ruler overlays | One exact full-screen crop per monitor | One exact crop per monitor if XWayland geometry matches the portal image. Otherwise, one fullscreen portal snapshot |
+| Global shortcuts | X11 key grab | GlobalShortcuts portal. The compositor chooses the final binding |
+| Continuous ruler background | Live transparent recapture | Use `Recapture` or press `R` after the underlying content changes. The Screenshot portal is request-based |
 | Clipboard | Native X11 selection | Native Wayland data control plus GUI clipboard fallback |
 
-Wayland does not let ordinary applications silently read other windows or
-install global input hooks. PixelKit respects that boundary. A portal dialog is
-part of the desktop security model, not a missing package permission. On a
-Wayland session, PixelKit still captures through the portal. It uses XWayland
-only to position the overlay windows. If matching monitor geometry is
-unavailable, PixelKit displays the portal snapshot in one fullscreen overlay. On a
-desktop without the GlobalShortcuts portal, assign these commands in the
-desktop's keyboard settings:
+Wayland does not let regular applications silently capture other windows or
+install global key grabs. The permission or target dialog is expected and does
+not mean a package permission is missing. PixelKit uses the screenshot portal
+for capture and XWayland only to position its overlays. If it cannot match the
+portal image to the monitor geometry, it displays the snapshot in one fullscreen
+overlay.
+
+If your desktop does not provide the GlobalShortcuts portal, assign these
+commands in the desktop's keyboard settings:
 
 ```text
 pixelkit color-picker
@@ -124,12 +127,11 @@ pixelkit screen-ruler
 
 ## Install from package repositories
 
-Published x86_64 packages are available from the
+Published x86_64 packages are available in the
 [Fedora Copr repository](https://copr.fedorainfracloud.org/coprs/kuchen/pixelkit/)
-and the
-[openSUSE Build Service project](https://build.opensuse.org/project/show/home:kuchen:PixelKit).
-Arch Linux users can build PixelKit from its
-[AUR package](https://aur.archlinux.org/packages/pixelkit).
+and the [openSUSE Build Service project](https://build.opensuse.org/project/show/home:kuchen:PixelKit).
+There is also an [AUR package](https://aur.archlinux.org/packages/pixelkit) for
+Arch Linux.
 
 ### Fedora 44 and Rawhide
 
@@ -138,7 +140,7 @@ sudo dnf copr enable kuchen/pixelkit
 sudo dnf install pixelkit
 ```
 
-### Arch Linux (AUR)
+### Arch Linux with AUR
 
 Install with an AUR helper such as `yay`:
 
@@ -156,8 +158,8 @@ makepkg -si
 
 ### Debian 13 and Ubuntu 24.04/26.04
 
-Set `repo` to the entry matching the installed distribution, then add the OBS
-signing key and APT source:
+Choose the `repo` value that matches your distribution, then add the OBS signing
+key and APT source:
 
 ```bash
 repo=xUbuntu_24.04 # Debian_13, xUbuntu_24.04, or xUbuntu_26.04
@@ -178,8 +180,9 @@ The OBS signing-key fingerprint is
 
 ## Install from source
 
-Rust 1.88 or newer, GCC, `make`, and normal X11/Wayland/OpenGL runtime libraries
-are required. Rust dependencies do not require GTK or Qt development headers.
+To build PixelKit, you need Rust 1.88 or newer, GCC, `make`, and the usual X11,
+Wayland, and OpenGL runtime libraries. The Rust dependencies do not need GTK or
+Qt development headers.
 
 ```bash
 cargo test --all-targets --locked
@@ -195,7 +198,7 @@ For a user-only installation:
 
 ## Run PixelKit
 
-Launch `pixelkit`, or use a direct command:
+Run `pixelkit` to open the main window. You can also launch each tool directly:
 
 ```bash
 pixelkit color-picker
@@ -205,10 +208,11 @@ pixelkit code-scanner
 pixelkit screen-ruler
 ```
 
-The native X11 defaults are `Super+Shift+C` for the picker,
+On X11, the default shortcuts are `Super+Shift+C` for the picker,
 `Super+Shift+Z` for the magnifier, `Super+Shift+Q` for the scanner, and
-`Super+Shift+M` for the ruler. All are editable in **Background shortcuts**;
-Wayland compositors own the final assigned combinations.
+`Super+Shift+M` for the ruler. You can edit all four under
+`Background shortcuts`. On Wayland, the compositor owns the final key
+assignments.
 
 Enable background shortcuts for native packages:
 
@@ -217,8 +221,9 @@ systemctl --user reenable pixelkit.service
 systemctl --user restart pixelkit.service
 ```
 
-`reenable` also removes obsolete early-start links created by older PixelKit
-packages, so the daemon starts only after the graphical session is ready.
+The `reenable` command also removes obsolete early-start links left by older
+PixelKit packages. This keeps the daemon from starting before the graphical
+session is ready.
 
 On Wayland, the desktop owns the active key combinations. If it registered the
 actions without assigning keys, open its PixelKit shortcut page with:
@@ -227,14 +232,14 @@ actions without assigning keys, open its PixelKit shortcut page with:
 pixelkit configure-shortcuts
 ```
 
-## Packaging
+## Building packages
 
-The repository includes source-build definitions for the major Linux package
-families. Release builders use the locked dependency graph; distro builds can
-use the vendored source archive produced by `make dist` and need no network
-inside the build sandbox.
+The repository contains build definitions for the package formats listed below.
+Release builds use the locked dependency graph. Distribution builds can use the
+vendored source archive from `make dist`, so they do not need network access in
+the build sandbox.
 
-The normal entry point is the package orchestrator. It refreshes Flatpak's
+Use `scripts/build-packages.sh` as the main entry point. It refreshes Flatpak's
 locked Cargo source hashes, runs the available checks once, reuses the release
 binary where possible, and writes a verified `dist/SHA256SUMS`:
 
@@ -243,19 +248,21 @@ binary where possible, and writes a verified `dist/SHA256SUMS`:
 ./scripts/build-packages.sh
 ```
 
-With no format arguments it builds every format supported by tools installed
-on the current host. Explicit selections are strict, for example
-`./scripts/build-packages.sh rpm deb`. For a real upstream release, use:
+With no format argument, the script builds every format supported by the tools
+installed on your machine. To build specific formats, name them explicitly, for
+example `./scripts/build-packages.sh rpm deb`.
+
+To start a new upstream release, run:
 
 ```bash
 ./scripts/build-packages.sh --clean --set-version 0.1.1
 ```
 
-This updates Cargo, the lockfile, distro package definitions, Flatpak, Snap,
-Nix, AppStream, and the manual page, then resets RPM/Debian/Arch package
-revisions for the new version. For another package revision of the same
-upstream version, use `--bump "Short changelog summary"` instead. Neither option
-commits, tags, pushes, or publishes anything.
+This updates Cargo, the lockfile, distribution package definitions, Flatpak,
+Snap, Nix, AppStream, and the manual page. It also resets the RPM, Debian, and
+Arch package revisions for the new version. To package another revision of the
+same upstream version, use `--bump "Short changelog summary"` instead. Neither
+option commits, tags, pushes, or publishes anything.
 
 After the tagged GitHub release and its checksum manifest are public, publish
 the matching vendored archive to the AUR with:
@@ -264,12 +271,12 @@ the matching vendored archive to the AUR with:
 ./scripts/publish-aur.sh
 ```
 
-Use `--no-push` for a full preparation and source-verification rehearsal.
+Add `--no-push` to prepare and verify the source without publishing it.
 
-`make packages` is a shorthand, with optional arguments supplied through
-`PACKAGE_ARGS`. If an RPM builder is installed without the spec's development
-packages, `--list` reports the missing package names; on Fedora they can all be
-installed with `sudo dnf builddep packaging/rpm/pixelkit.spec`.
+`make packages` calls the same script. Pass optional arguments through
+`PACKAGE_ARGS`. If you have an RPM builder but not the development packages from
+the spec, `--list` prints the missing package names. On Fedora, install all of
+them with `sudo dnf builddep packaging/rpm/pixelkit.spec`.
 
 | Ecosystem | Definition | Build command |
 |---|---|---|
@@ -282,18 +289,20 @@ installed with `sudo dnf builddep packaging/rpm/pixelkit.spec`.
 | Nix / NixOS | `flake.nix` | `./scripts/build-packages.sh nix` |
 | AppImage | `packaging/appimage/build-appimage.sh` | `./scripts/build-packages.sh appimage` |
 
-See [Packaging and release guide](docs/PACKAGING.md) for namespace ownership,
+See the [packaging and release guide](docs/PACKAGING.md) for namespace ownership,
 checksums, repository submission, and validation details.
 
 ## Configuration
 
-Settings use readable, version-tolerant JSON:
+PixelKit stores its settings and color history as readable, version-tolerant
+JSON:
 
 - `${XDG_CONFIG_HOME:-~/.config}/pixelkit/settings.json`
 - `${XDG_DATA_HOME:-~/.local/share}/pixelkit/history.json`
 
-Run `pixelkit paths` to print the exact locations. Corrupt settings never erase
-history; the UI reports save errors and falls back to safe defaults.
+Run `pixelkit paths` to print the exact locations. If the settings file is
+corrupt, PixelKit leaves the history alone, reports the error in the UI, and
+loads safe defaults.
 
 ## Development and tests
 
@@ -307,13 +316,13 @@ cargo run -- code-scanner --image test-screen.png
 cargo run -- screen-ruler --image test-screen.png
 ```
 
-The `--image` mode exercises the exact picker, magnifier, scanner, and ruler UI
-and algorithms without requesting desktop capture. Multi-monitor and
-mixed-scale release testing is still recommended on both X11 and Wayland.
+The `--image` option runs the same picker, magnifier, scanner, and ruler UI and
+algorithms without requesting a desktop capture. Before a release, test on X11
+and Wayland, especially with multiple monitors and mixed scale factors.
 
 ## License and attribution
 
-PixelKit's own code is MIT licensed. See [NOTICE](NOTICE) for PowerToys and
-barcode-decoder attribution. Third-party Rust dependencies retain their
-respective licenses; `cargo deny`/distribution tooling can generate the final
-dependency license inventory for a release.
+PixelKit is licensed under MIT. [NOTICE](NOTICE) lists the PowerToys and barcode
+decoder attribution. Third-party Rust crates keep their own licenses. Use
+`cargo deny` and the distribution tools to produce the dependency license
+inventory for a release.
